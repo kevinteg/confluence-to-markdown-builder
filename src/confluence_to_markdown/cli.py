@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
-import sys
 import zipfile
 from pathlib import Path
 
@@ -32,15 +32,15 @@ def cli(zip_file: Path, force: bool, verbose: bool) -> None:
     settings = Settings.default()
     setup_logging(settings, verbose)
 
-    # Step 1: Clean and extract ZIP
+    # Step 1: Extract ZIP
     click.echo(f"Extracting {zip_file.name}...")
-    extract_count = extract_zip(zip_file, force)
-    click.echo(f"  Extracted {extract_count} HTML files to {EXPORT_DIR}/")
+    extracted, skipped = extract_zip(zip_file, force, verbose)
+    click.echo(f"  Extracted: {extracted}, Already existed: {skipped}")
 
     # Step 2: Convert HTML files to Markdown
     click.echo(f"Converting to Markdown...")
-    convert_count, warnings = convert_html_files(settings)
-    click.echo(f"  Converted {convert_count} files to {MARKDOWN_DIR}/")
+    converted, skipped_md, warnings = convert_html_files(settings, force, verbose)
+    click.echo(f"  Converted: {converted}, Already existed: {skipped_md}")
 
     # Print warnings if any
     if warnings:
@@ -55,27 +55,23 @@ def cli(zip_file: Path, force: bool, verbose: bool) -> None:
     click.echo("Done!")
 
 
-def extract_zip(zip_file: Path, force: bool) -> int:
+def extract_zip(zip_file: Path, force: bool, verbose: bool) -> tuple[int, int]:
     """Extract HTML files from ZIP to confluence_export folder.
 
     Removes the top-level containing folder and keeps only HTML files.
 
     Returns:
-        Number of HTML files extracted.
+        Tuple of (extracted count, already existed count).
     """
-    # Clean export directory if force or if it exists
-    if EXPORT_DIR.exists():
-        if force:
-            shutil.rmtree(EXPORT_DIR)
-        else:
-            # Remove existing files but keep directory
-            for f in EXPORT_DIR.glob("*"):
-                if f.is_file():
-                    f.unlink()
+    # Clean export directory if force
+    if force and EXPORT_DIR.exists():
+        shutil.rmtree(EXPORT_DIR)
 
     EXPORT_DIR.mkdir(exist_ok=True)
 
-    html_count = 0
+    extracted = 0
+    skipped = 0
+
     with zipfile.ZipFile(zip_file, "r") as zf:
         for member in zf.namelist():
             # Skip directories
@@ -94,11 +90,20 @@ def extract_zip(zip_file: Path, force: bool) -> int:
             else:
                 filename = parts[0]
 
-            # Extract to export directory
             target_path = EXPORT_DIR / filename
 
-            # Handle duplicate filenames by adding a suffix
+            # Check if file already exists with same content
             if target_path.exists():
+                # Read content from ZIP to compare
+                with zf.open(member) as source:
+                    new_content = source.read()
+
+                existing_content = target_path.read_bytes()
+                if existing_content == new_content:
+                    skipped += 1
+                    continue
+
+                # Content differs - need to extract (handle duplicate name)
                 base = target_path.stem
                 suffix = target_path.suffix
                 counter = 1
@@ -107,23 +112,27 @@ def extract_zip(zip_file: Path, force: bool) -> int:
                     counter += 1
 
             # Extract the file
+            if verbose:
+                click.echo(f"  Extracting: {filename}")
+
             with zf.open(member) as source:
                 target_path.write_bytes(source.read())
-            html_count += 1
+            extracted += 1
 
-    return html_count
+    return extracted, skipped
 
 
-def convert_html_files(settings: Settings) -> tuple[int, list[str]]:
+def convert_html_files(settings: Settings, force: bool, verbose: bool) -> tuple[int, int, list[str]]:
     """Convert all HTML files in confluence_export to Markdown.
 
     Returns:
-        Tuple of (count of files converted, list of warnings).
+        Tuple of (converted count, already existed count, list of warnings).
     """
-    # Clean markdown directory
-    if MARKDOWN_DIR.exists():
+    # Clean markdown directory if force
+    if force and MARKDOWN_DIR.exists():
         shutil.rmtree(MARKDOWN_DIR)
-    MARKDOWN_DIR.mkdir()
+
+    MARKDOWN_DIR.mkdir(exist_ok=True)
 
     parser = ExportParser()
     converter = MarkdownConverter(settings)
@@ -132,7 +141,8 @@ def convert_html_files(settings: Settings) -> tuple[int, list[str]]:
     export = parser.parse(EXPORT_DIR)
 
     all_warnings: list[str] = []
-    convert_count = 0
+    converted = 0
+    skipped = 0
 
     for page in export.pages:
         result = converter.convert(page, export)
@@ -142,18 +152,27 @@ def convert_html_files(settings: Settings) -> tuple[int, list[str]]:
         output_path = MARKDOWN_DIR / filename
 
         # Handle duplicate filenames
-        if output_path.exists():
-            base = output_path.stem
-            counter = 1
-            while output_path.exists():
-                output_path = MARKDOWN_DIR / f"{base}_{counter}.md"
-                counter += 1
+        base_path = output_path
+        counter = 1
+        while output_path.exists():
+            # Check if content is the same
+            existing_content = output_path.read_text()
+            if existing_content == result.markdown:
+                skipped += 1
+                break
+            # Different content, try next filename
+            output_path = MARKDOWN_DIR / f"{base_path.stem}_{counter}.md"
+            counter += 1
+        else:
+            # File doesn't exist or we found a unique name
+            if verbose:
+                click.echo(f"  Converting: {page.title} -> {output_path.name}")
 
-        output_path.write_text(result.markdown)
-        convert_count += 1
-        all_warnings.extend(result.warnings)
+            output_path.write_text(result.markdown)
+            converted += 1
+            all_warnings.extend(result.warnings)
 
-    return convert_count, all_warnings
+    return converted, skipped, all_warnings
 
 
 def slugify(text: str) -> str:
