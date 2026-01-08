@@ -1,62 +1,35 @@
-"""Parse Confluence XML exports and build page tree."""
+"""Parse Confluence HTML exports and extract pages."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 import hashlib
+import re
 import zipfile
 import tempfile
 import shutil
 
-from lxml import etree
+from bs4 import BeautifulSoup
 
 
 @dataclass
 class Space:
     """Represents a Confluence space."""
 
-    id: str
     key: str
     name: str
-    home_page_id: str | None = None
 
 
 @dataclass
 class PageNode:
-    """A page in the hierarchy tree."""
+    """A page extracted from the HTML export."""
 
     id: str
     title: str
-    body_content: str  # Raw storage format XML
-    parent: "PageNode | None" = None
-    children: list["PageNode"] = field(default_factory=list)
-    position: int = 0
-    created_date: datetime | None = None
-    modified_date: datetime | None = None
-    labels: list[str] = field(default_factory=list)
-
-    @property
-    def depth(self) -> int:
-        """Depth in tree (0 = root)."""
-        depth = 0
-        node = self.parent
-        while node is not None:
-            depth += 1
-            node = node.parent
-        return depth
-
-    @property
-    def path(self) -> str:
-        """Full path like 'Parent/Child/This Page'."""
-        parts = []
-        node: PageNode | None = self
-        while node is not None:
-            parts.append(node.title)
-            node = node.parent
-        return "/".join(reversed(parts))
+    body_content: str  # Raw HTML content
+    filename: str  # Original filename
 
     @property
     def content_hash(self) -> str:
@@ -66,50 +39,29 @@ class PageNode:
 
 @dataclass
 class ConfluenceExport:
-    """Represents a parsed Confluence export."""
+    """Represents a parsed Confluence HTML export."""
 
     path: Path
     space: Space
-    root_pages: list[PageNode]
-    pages_by_id: dict[str, PageNode]
+    pages: list[PageNode]
+    pages_by_id: dict[str, PageNode] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Build pages_by_id index."""
+        self.pages_by_id = {page.id: page for page in self.pages}
 
     def walk_pages(self) -> Iterator[PageNode]:
-        """Iterate all pages in tree order (depth-first)."""
-
-        def walk_node(node: PageNode) -> Iterator[PageNode]:
-            yield node
-            for child in sorted(node.children, key=lambda p: p.position):
-                yield from walk_node(child)
-
-        for root in sorted(self.root_pages, key=lambda p: p.position):
-            yield from walk_node(root)
-
-    def get_page_by_path(self, path: str) -> PageNode | None:
-        """Get page by hierarchy path like 'Parent/Child/Grandchild'."""
-        parts = path.split("/")
-        for root in self.root_pages:
-            if root.title == parts[0]:
-                node = root
-                for part in parts[1:]:
-                    found = None
-                    for child in node.children:
-                        if child.title == part:
-                            found = child
-                            break
-                    if found is None:
-                        return None
-                    node = found
-                return node
-        return None
+        """Iterate all pages."""
+        yield from self.pages
 
     @property
     def all_pages(self) -> list[PageNode]:
         """Return all pages as a flat list."""
-        return list(self.walk_pages())
+        return self.pages
 
 
 class ExportParser:
-    """Parses Confluence XML exports."""
+    """Parses Confluence HTML exports."""
 
     def parse(self, path: str | Path) -> ConfluenceExport:
         """Parse an export ZIP or extracted directory.
@@ -118,7 +70,7 @@ class ExportParser:
             path: Path to the export ZIP file or extracted directory.
 
         Returns:
-            ConfluenceExport containing the parsed space and page tree.
+            ConfluenceExport containing the parsed pages.
 
         Raises:
             FileNotFoundError: If the path doesn't exist.
@@ -149,181 +101,135 @@ class ExportParser:
 
     def _parse_directory(self, dir_path: Path) -> ConfluenceExport:
         """Parse an extracted export directory."""
-        entities_path = dir_path / "entities.xml"
-        if not entities_path.exists():
-            raise ValueError(f"entities.xml not found in export: {dir_path}")
+        # Find all HTML files
+        html_files = list(dir_path.rglob("*.html"))
+        if not html_files:
+            raise ValueError(f"No HTML files found in export: {dir_path}")
 
-        space, pages, body_contents = self._parse_entities_xml(entities_path)
-        root_pages, pages_by_id = self._build_page_tree(pages, body_contents, space)
+        pages = []
+        space_name = None
+
+        for html_file in html_files:
+            page = self._parse_html_file(html_file)
+            if page:
+                pages.append(page)
+                # Try to extract space name from directory structure
+                if space_name is None:
+                    space_name = self._extract_space_name(html_file, dir_path)
+
+        if not pages:
+            raise ValueError(f"No valid pages found in export: {dir_path}")
+
+        # Create space from directory name or extracted name
+        space = Space(
+            key=space_name or dir_path.name,
+            name=space_name or dir_path.name,
+        )
 
         return ConfluenceExport(
             path=dir_path,
             space=space,
-            root_pages=root_pages,
-            pages_by_id=pages_by_id,
+            pages=pages,
         )
 
-    def _parse_entities_xml(
-        self, xml_path: Path
-    ) -> tuple[Space, list[dict], dict[str, str]]:
-        """Parse the entities.xml file.
+    def _parse_html_file(self, html_path: Path) -> PageNode | None:
+        """Parse a single HTML file into a PageNode."""
+        try:
+            content = html_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            try:
+                content = html_path.read_text(encoding="latin-1")
+            except Exception:
+                return None
 
-        Returns:
-            Tuple of (Space, list of page dicts, dict of body contents by id).
-        """
-        tree = etree.parse(str(xml_path))
-        root = tree.getroot()
+        soup = BeautifulSoup(content, "lxml")
 
-        # Find the space
-        space = self._parse_space(root)
+        # Extract title
+        title = self._extract_title(soup, html_path)
 
-        # Find all pages
-        pages = self._parse_pages(root)
+        # Extract body content
+        body = self._extract_body(soup)
 
-        # Find all body contents
-        body_contents = self._parse_body_contents(root)
+        if not body.strip():
+            return None
 
-        return space, pages, body_contents
+        # Generate ID from filename
+        page_id = self._generate_id(html_path)
 
-    def _parse_space(self, root: etree._Element) -> Space:
-        """Parse Space object from XML."""
-        space_elem = root.find(".//object[@class='Space']")
-        if space_elem is None:
-            raise ValueError("No Space found in entities.xml")
+        return PageNode(
+            id=page_id,
+            title=title,
+            body_content=body,
+            filename=html_path.name,
+        )
 
-        space_id = self._get_id(space_elem)
-        key = self._get_property_text(space_elem, "key") or ""
-        name = self._get_property_text(space_elem, "name") or key
+    def _extract_title(self, soup: BeautifulSoup, html_path: Path) -> str:
+        """Extract page title from HTML."""
+        # Try <title> tag first
+        title_tag = soup.find("title")
+        if title_tag and title_tag.string:
+            title = title_tag.string.strip()
+            # Clean up common suffixes like " - Space Name"
+            if " - " in title:
+                title = title.split(" - ")[0].strip()
+            if title:
+                return title
 
-        home_page_elem = space_elem.find(".//property[@name='homePage']")
-        home_page_id = None
-        if home_page_elem is not None:
-            id_elem = home_page_elem.find("id")
-            if id_elem is not None and id_elem.text:
-                home_page_id = id_elem.text
+        # Try first <h1>
+        h1_tag = soup.find("h1")
+        if h1_tag:
+            title = h1_tag.get_text(strip=True)
+            if title:
+                return title
 
-        return Space(id=space_id, key=key, name=name, home_page_id=home_page_id)
+        # Fallback to filename without extension
+        return html_path.stem
 
-    def _parse_pages(self, root: etree._Element) -> list[dict]:
-        """Parse all Page objects from XML."""
-        pages = []
-        for page_elem in root.findall(".//object[@class='Page']"):
-            content_status = self._get_property_text(page_elem, "contentStatus")
-            if content_status != "current":
-                continue
+    def _extract_body(self, soup: BeautifulSoup) -> str:
+        """Extract body content from HTML."""
+        # Look for main content areas common in Confluence exports
+        content_selectors = [
+            "div#main-content",
+            "div.wiki-content",
+            "div#content",
+            "article",
+            "main",
+            "body",
+        ]
 
-            page_id = self._get_id(page_elem)
-            title = self._get_property_text(page_elem, "title") or f"Untitled-{page_id}"
-            position = int(self._get_property_text(page_elem, "position") or "0")
+        for selector in content_selectors:
+            content = soup.select_one(selector)
+            if content:
+                return str(content)
 
-            parent_elem = page_elem.find(".//property[@name='parent']")
-            parent_id = None
-            if parent_elem is not None:
-                parent_id_elem = parent_elem.find("id")
-                if parent_id_elem is not None and parent_id_elem.text:
-                    parent_id = parent_id_elem.text
+        # Fallback to entire body
+        body = soup.find("body")
+        if body:
+            return str(body)
 
-            created_date = self._parse_date(
-                self._get_property_text(page_elem, "creationDate")
-            )
-            modified_date = self._parse_date(
-                self._get_property_text(page_elem, "lastModificationDate")
-            )
+        return str(soup)
 
-            # Get body content IDs from collection
-            body_content_ids = []
-            body_contents_elem = page_elem.find(".//collection[@name='bodyContents']")
-            if body_contents_elem is not None:
-                for elem in body_contents_elem.findall(".//element"):
-                    id_elem = elem.find("id")
-                    if id_elem is not None and id_elem.text:
-                        body_content_ids.append(id_elem.text)
+    def _extract_space_name(self, html_path: Path, base_path: Path) -> str | None:
+        """Try to extract space name from the export structure."""
+        relative = html_path.relative_to(base_path)
+        parts = relative.parts
 
-            pages.append(
-                {
-                    "id": page_id,
-                    "title": title,
-                    "parent_id": parent_id,
-                    "position": position,
-                    "created_date": created_date,
-                    "modified_date": modified_date,
-                    "body_content_ids": body_content_ids,
-                }
-            )
+        # Common patterns: space_name/page.html or just page.html
+        if len(parts) > 1:
+            return parts[0]
 
-        return pages
-
-    def _parse_body_contents(self, root: etree._Element) -> dict[str, str]:
-        """Parse all BodyContent objects from XML."""
-        body_contents = {}
-        for bc_elem in root.findall(".//object[@class='BodyContent']"):
-            bc_id = self._get_id(bc_elem)
-            body_type = self._get_property_text(bc_elem, "bodyType")
-            if body_type != "2":  # Only storage format
-                continue
-            body = self._get_property_text(bc_elem, "body") or ""
-            body_contents[bc_id] = body
-        return body_contents
-
-    def _build_page_tree(
-        self, pages: list[dict], body_contents: dict[str, str], space: Space
-    ) -> tuple[list[PageNode], dict[str, PageNode]]:
-        """Build hierarchical page tree from flat page list."""
-        # Create PageNode objects
-        pages_by_id: dict[str, PageNode] = {}
-        parent_map: dict[str, str | None] = {}
-
-        for page_data in pages:
-            # Get body content
-            body = ""
-            for bc_id in page_data.get("body_content_ids", []):
-                if bc_id in body_contents:
-                    body = body_contents[bc_id]
-                    break
-
-            node = PageNode(
-                id=page_data["id"],
-                title=page_data["title"],
-                body_content=body,
-                position=page_data["position"],
-                created_date=page_data["created_date"],
-                modified_date=page_data["modified_date"],
-            )
-            pages_by_id[node.id] = node
-            parent_map[node.id] = page_data.get("parent_id")
-
-        # Build parent-child relationships
-        root_pages = []
-        for page_id, node in pages_by_id.items():
-            parent_id = parent_map.get(page_id)
-            if parent_id and parent_id in pages_by_id:
-                parent_node = pages_by_id[parent_id]
-                node.parent = parent_node
-                parent_node.children.append(node)
-            else:
-                root_pages.append(node)
-
-        return root_pages, pages_by_id
-
-    def _get_id(self, elem: etree._Element) -> str:
-        """Get the id value from an object element."""
-        id_elem = elem.find("id")
-        if id_elem is not None and id_elem.text:
-            return id_elem.text
-        raise ValueError("Element has no id")
-
-    def _get_property_text(self, elem: etree._Element, name: str) -> str | None:
-        """Get text value of a property by name."""
-        prop = elem.find(f".//property[@name='{name}']")
-        if prop is not None and prop.text:
-            return prop.text.strip()
         return None
 
-    def _parse_date(self, date_str: str | None) -> datetime | None:
-        """Parse a date string from Confluence format."""
-        if not date_str:
-            return None
-        try:
-            return datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            return None
+    def _generate_id(self, html_path: Path) -> str:
+        """Generate a unique ID for a page based on its path."""
+        # Use hash of the path for consistent IDs
+        path_str = str(html_path.resolve())
+        return hashlib.md5(path_str.encode()).hexdigest()[:12]
+
+    def _slugify(self, text: str) -> str:
+        """Convert text to kebab-case slug."""
+        text = text.lower()
+        text = re.sub(r"[^\w\s-]", "", text)
+        text = re.sub(r"[\s_]+", "-", text)
+        text = re.sub(r"-+", "-", text)
+        return text.strip("-")

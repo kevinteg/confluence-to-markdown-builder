@@ -24,13 +24,10 @@ class PageConversionReport:
 
     page_id: str
     page_title: str
-    page_path: str  # Hierarchy path
     output_file: str
     status: Literal["success", "partial", "failed"]
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
-    skipped_sections: list[str] = field(default_factory=list)
-    unknown_macros: list[str] = field(default_factory=list)
     conversion_time_ms: int = 0
 
 
@@ -106,7 +103,7 @@ class ConversionBuilder:
 
         # Parse the export
         export = self.parser.parse(export_path)
-        logger.info(f"Parsed {len(export.pages_by_id)} pages from entities.xml")
+        logger.info(f"Parsed {len(export.pages_by_id)} pages from HTML files")
 
         # Determine which pages need conversion
         pages_to_convert = self._determine_pages_to_convert(export, force)
@@ -253,18 +250,15 @@ class ConversionBuilder:
             conversion_time_ms = int((time.time() - start_time) * 1000)
 
             status: Literal["success", "partial", "failed"] = "success"
-            if result.warnings or result.unknown_macros:
+            if result.warnings:
                 status = "partial"
 
             return PageConversionReport(
                 page_id=page.id,
                 page_title=page.title,
-                page_path=page.path,
                 output_file=str(output_path),
                 status=status,
                 warnings=result.warnings,
-                skipped_sections=result.skipped_sections,
-                unknown_macros=result.unknown_macros,
                 conversion_time_ms=conversion_time_ms,
             )
 
@@ -275,7 +269,6 @@ class ConversionBuilder:
             return PageConversionReport(
                 page_id=page.id,
                 page_title=page.title,
-                page_path=page.path,
                 output_file=str(output_path),
                 status="failed",
                 errors=[str(e)],
@@ -283,22 +276,14 @@ class ConversionBuilder:
             )
 
     def _get_output_path(self, page: PageNode, export: ConfluenceExport) -> Path:
-        """Calculate output path for a page."""
+        """Calculate output path for a page (always flat structure)."""
         exports_dir = self.settings.exports_dir
 
-        if self.settings.output.preserve_hierarchy:
-            # Mirror the page hierarchy
-            path_parts = page.path.split("/")
-            if self.settings.output.filename_style == "slugify":
-                path_parts = [self._slugify(part) for part in path_parts]
-            path_parts[-1] = path_parts[-1] + ".md"
-            return exports_dir / export.space.key.lower() / Path(*path_parts)
-        else:
-            # Flat structure
-            filename = page.title
-            if self.settings.output.filename_style == "slugify":
-                filename = self._slugify(filename)
-            return exports_dir / export.space.key.lower() / f"{filename}.md"
+        # Always use flat structure
+        filename = page.title
+        if self.settings.output.filename_style == "slugify":
+            filename = self._slugify(filename)
+        return exports_dir / export.space.key.lower() / f"{filename}.md"
 
     def _slugify(self, text: str) -> str:
         """Convert text to kebab-case slug."""
@@ -412,14 +397,11 @@ class ConversionBuilder:
         # Hash settings that affect output
         relevant = {
             "exclude_pages": self.settings.exclude_pages,
-            "exclude_sections": self.settings.exclude_sections,
             "content": {
-                "unknown_macro_handling": self.settings.content.unknown_macro_handling,
                 "include_frontmatter": self.settings.content.include_frontmatter,
             },
             "output": {
                 "filename_style": self.settings.output.filename_style,
-                "preserve_hierarchy": self.settings.output.preserve_hierarchy,
             },
         }
         content = json.dumps(relevant, sort_keys=True)

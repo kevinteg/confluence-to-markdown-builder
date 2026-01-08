@@ -1,4 +1,4 @@
-"""Integration tests with example Confluence XML export."""
+"""Integration tests with example Confluence HTML export."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ EXAMPLE_EXPORT = FIXTURES_DIR / "example-export"
 
 
 class TestExampleExportParsing:
-    """Tests for parsing the example Confluence export."""
+    """Tests for parsing the example Confluence HTML export."""
 
     def test_parse_example_export(self) -> None:
         """Parse the example export and verify structure."""
@@ -27,113 +27,46 @@ class TestExampleExportParsing:
         export = parser.parse(EXAMPLE_EXPORT)
 
         # Verify space
-        assert export.space.key == "DOCS"
-        assert export.space.name == "Documentation"
+        assert export.space.key == "example-export"
+        assert export.space.name == "example-export"
 
-        # Verify we have the right number of pages (excluding historical)
-        assert len(export.pages_by_id) == 4
+        # Verify we have the right number of pages
+        assert len(export.pages) == 4
 
-    def test_page_hierarchy(self) -> None:
-        """Verify page hierarchy is correctly built."""
+    def test_page_titles(self) -> None:
+        """Verify page titles are correctly extracted."""
         parser = ExportParser()
         export = parser.parse(EXAMPLE_EXPORT)
 
-        # Check root pages
-        assert len(export.root_pages) == 1
-        home = export.root_pages[0]
-        assert home.title == "Home"
-
-        # Check children of Home
-        assert len(home.children) == 2
-        child_titles = {c.title for c in home.children}
-        assert "Getting Started" in child_titles
-        assert "Architecture Overview" in child_titles
-
-        # Check grandchild (Installation Guide under Getting Started)
-        getting_started = next(c for c in home.children if c.title == "Getting Started")
-        assert len(getting_started.children) == 1
-        assert getting_started.children[0].title == "Installation Guide"
-
-    def test_page_paths(self) -> None:
-        """Verify page path generation."""
-        parser = ExportParser()
-        export = parser.parse(EXAMPLE_EXPORT)
-
-        # Test various page paths
-        home = export.get_page_by_path("Home")
-        assert home is not None
-        assert home.path == "Home"
-
-        getting_started = export.get_page_by_path("Home/Getting Started")
-        assert getting_started is not None
-        assert getting_started.path == "Home/Getting Started"
-
-        installation = export.get_page_by_path("Home/Getting Started/Installation Guide")
-        assert installation is not None
-        assert installation.path == "Home/Getting Started/Installation Guide"
-
-    def test_page_depths(self) -> None:
-        """Verify page depth calculation."""
-        parser = ExportParser()
-        export = parser.parse(EXAMPLE_EXPORT)
-
-        home = export.get_page_by_path("Home")
-        assert home is not None
-        assert home.depth == 0
-
-        getting_started = export.get_page_by_path("Home/Getting Started")
-        assert getting_started is not None
-        assert getting_started.depth == 1
-
-        installation = export.get_page_by_path("Home/Getting Started/Installation Guide")
-        assert installation is not None
-        assert installation.depth == 2
-
-    def test_page_dates(self) -> None:
-        """Verify page dates are parsed."""
-        parser = ExportParser()
-        export = parser.parse(EXAMPLE_EXPORT)
-
-        home = export.get_page_by_path("Home")
-        assert home is not None
-        assert home.created_date is not None
-        assert home.modified_date is not None
-        assert home.created_date.year == 2024
-        assert home.created_date.month == 1
+        titles = {page.title for page in export.pages}
+        assert "Home" in titles
+        assert "Getting Started" in titles
+        assert "Architecture Overview" in titles
+        assert "Installation Guide" in titles
 
     def test_page_content_present(self) -> None:
         """Verify body content is loaded."""
         parser = ExportParser()
         export = parser.parse(EXAMPLE_EXPORT)
 
-        home = export.get_page_by_path("Home")
+        # Find Home page
+        home = next((p for p in export.pages if p.title == "Home"), None)
         assert home is not None
         assert home.body_content
         assert "Welcome to the Documentation" in home.body_content
 
-        getting_started = export.get_page_by_path("Home/Getting Started")
+        # Find Getting Started page
+        getting_started = next((p for p in export.pages if p.title == "Getting Started"), None)
         assert getting_started is not None
         assert "Prerequisites" in getting_started.body_content
 
-    def test_walk_pages_order(self) -> None:
-        """Verify walk_pages returns pages in correct order."""
+    def test_walk_pages(self) -> None:
+        """Verify walk_pages returns all pages."""
         parser = ExportParser()
         export = parser.parse(EXAMPLE_EXPORT)
 
         pages = list(export.walk_pages())
-        titles = [p.title for p in pages]
-
-        # Should be depth-first, position-ordered
-        assert titles[0] == "Home"
-        # Getting Started (position 0) should come before Architecture Overview (position 1)
-        getting_started_idx = titles.index("Getting Started")
-        architecture_idx = titles.index("Architecture Overview")
-        assert getting_started_idx < architecture_idx
-
-        # Installation Guide should come after Getting Started (it's a child)
-        installation_idx = titles.index("Installation Guide")
-        assert installation_idx > getting_started_idx
-        assert installation_idx < architecture_idx  # But before Architecture
+        assert len(pages) == 4
 
 
 class TestExampleExportConversion:
@@ -154,7 +87,7 @@ class TestExampleExportConversion:
     def test_convert_home_page(self, settings: Settings, export) -> None:
         """Convert the Home page to Markdown."""
         converter = MarkdownConverter(settings)
-        home = export.get_page_by_path("Home")
+        home = next((p for p in export.pages if p.title == "Home"), None)
         assert home is not None
 
         result = converter.convert(home, export)
@@ -170,48 +103,31 @@ class TestExampleExportConversion:
         assert "main documentation hub" in result.markdown
 
         # Check list conversion
-        assert "- " in result.markdown or "* " in result.markdown
+        assert "- " in result.markdown
 
     def test_convert_page_with_code_block(self, settings: Settings, export) -> None:
         """Convert a page with code blocks."""
         converter = MarkdownConverter(settings)
-        getting_started = export.get_page_by_path("Home/Getting Started")
+        getting_started = next((p for p in export.pages if p.title == "Getting Started"), None)
         assert getting_started is not None
 
         result = converter.convert(getting_started, export)
 
-        # The test fixture uses <pre> tags which aren't standard Confluence storage format.
-        # In real Confluence exports, code blocks use ac:structured-macro.
-        # Just verify conversion ran without fatal errors
-        assert result.markdown is not None
-        assert "Getting Started" in result.markdown or result.warnings
+        # Check code block
+        assert "```" in result.markdown
+        assert "pip install our-package" in result.markdown
 
     def test_convert_page_with_tables(self, settings: Settings, export) -> None:
         """Convert a page with tables."""
         converter = MarkdownConverter(settings)
-        getting_started = export.get_page_by_path("Home/Getting Started")
+        getting_started = next((p for p in export.pages if p.title == "Getting Started"), None)
         assert getting_started is not None
 
         result = converter.convert(getting_started, export)
 
         # Table should be converted (basic check for table markers)
-        # The actual format depends on the parser implementation
-        assert "Version" in result.markdown or "|" in result.markdown
-
-    def test_section_filtering(self, export) -> None:
-        """Test that section filtering works."""
-        settings = Settings.default()
-        settings.exclude_sections = ["**/Change Log"]
-
-        converter = MarkdownConverter(settings)
-        home = export.get_page_by_path("Home")
-        assert home is not None
-
-        result = converter.convert(home, export)
-
-        # The "Change Log" section should be reported as skipped
-        # Note: actual filtering depends on how the content parser works
-        assert "Change Log" in str(result.skipped_sections) or "Change Log" not in result.markdown.split("Quick Links")[1] if "Quick Links" in result.markdown else True
+        assert "|" in result.markdown
+        assert "Version" in result.markdown
 
     def test_frontmatter_disabled(self, export) -> None:
         """Test conversion with frontmatter disabled."""
@@ -219,7 +135,7 @@ class TestExampleExportConversion:
         settings.content.include_frontmatter = False
 
         converter = MarkdownConverter(settings)
-        home = export.get_page_by_path("Home")
+        home = next((p for p in export.pages if p.title == "Home"), None)
         assert home is not None
 
         result = converter.convert(home, export)
@@ -249,22 +165,9 @@ class TestFullConversionPipeline:
             assert result.pages_failed == 0
             assert result.pages_skipped == 0
 
-            # Check files were created
+            # Check files were created (flat structure)
             output_files = list(exports_dir.rglob("*.md"))
             assert len(output_files) == 4
-
-            # Verify hierarchy is preserved
-            docs_dir = exports_dir / "docs"
-            assert docs_dir.exists()
-
-            # Check Home page exists
-            home_file = docs_dir / "home.md"
-            assert home_file.exists()
-
-            # Check nested structure
-            getting_started_dir = docs_dir / "home" / "getting-started"
-            installation_file = getting_started_dir / "installation-guide.md"
-            # Note: exact path depends on preserve_hierarchy setting
 
     def test_incremental_conversion(self) -> None:
         """Test that incremental conversion skips unchanged pages."""
@@ -343,7 +246,7 @@ class TestMarkdownOutputQuality:
         parser = ExportParser()
         export = parser.parse(EXAMPLE_EXPORT)
         converter = MarkdownConverter(settings)
-        home = export.get_page_by_path("Home")
+        home = next((p for p in export.pages if p.title == "Home"), None)
         assert home is not None
         result = converter.convert(home, export)
         return result.markdown
@@ -355,17 +258,17 @@ class TestMarkdownOutputQuality:
         parser = ExportParser()
         export = parser.parse(EXAMPLE_EXPORT)
         converter = MarkdownConverter(settings)
-        page = export.get_page_by_path("Home/Architecture Overview")
+        page = next((p for p in export.pages if p.title == "Architecture Overview"), None)
         assert page is not None
         result = converter.convert(page, export)
         return result.markdown
 
-    def test_no_raw_html_in_output(self, converted_home: str) -> None:
-        """Ensure no raw Confluence HTML leaks through."""
-        # These should not appear in the output
-        assert "<ac:" not in converted_home
-        assert "<ri:" not in converted_home
-        assert "</ac:" not in converted_home
+    def test_no_raw_html_tags_in_output(self, converted_home: str) -> None:
+        """Ensure common HTML tags are converted."""
+        # These raw tags should be converted
+        assert "<p>" not in converted_home
+        assert "<ul>" not in converted_home
+        assert "<li>" not in converted_home
 
     def test_frontmatter_valid_yaml(self, converted_home: str) -> None:
         """Ensure frontmatter is valid YAML."""
@@ -393,16 +296,15 @@ class TestMarkdownOutputQuality:
         lines = converted_home.split("\n")
         heading_lines = [l for l in lines if l.startswith("#")]
 
-        # Should have some headings (Home page doesn't have <pre> tags so it parses correctly)
+        # Should have some headings
         assert len(heading_lines) > 0
 
         # All headings should have space after #
         for heading in heading_lines:
-            # Pattern: one or more #, then a space, then text
             import re
             assert re.match(r"^#+\s+\S", heading), f"Invalid heading: {heading}"
 
     def test_lists_properly_formatted(self, converted_home: str) -> None:
         """Check that lists are properly formatted."""
-        # Should have list items (Home page has lists that parse correctly)
+        # Should have list items
         assert "- " in converted_home or "1. " in converted_home

@@ -7,7 +7,6 @@ import pytest
 
 from confluence_to_markdown.config import (
     ContentSettings,
-    LinkSettings,
     LoggingSettings,
     OutputSettings,
     Settings,
@@ -24,7 +23,6 @@ class TestSettings:
         assert settings.imports_dir == Path("./imports")
         assert settings.exports_dir == Path("./exports")
         assert settings.exclude_pages == []
-        assert settings.exclude_sections == []
 
     def test_load_nonexistent_file(self) -> None:
         """Loading nonexistent file raises error."""
@@ -40,8 +38,6 @@ imports_dir: ./custom/imports
 exports_dir: ./custom/exports
 exclude_pages:
   - "Archive/*"
-exclude_sections:
-  - "**/Change Log"
             """
             )
             f.flush()
@@ -51,7 +47,6 @@ exclude_sections:
             assert settings.imports_dir == Path("./custom/imports")
             assert settings.exports_dir == Path("./custom/exports")
             assert "Archive/*" in settings.exclude_pages
-            assert "**/Change Log" in settings.exclude_sections
 
             Path(f.name).unlink()
 
@@ -87,16 +82,8 @@ class TestContentSettings:
         """Default content settings."""
         settings = ContentSettings()
 
-        assert settings.unknown_macro_handling == "comment"
         assert settings.include_frontmatter is True
         assert "title" in settings.frontmatter_fields
-
-    def test_link_settings_default(self) -> None:
-        """Default link settings."""
-        settings = ContentSettings()
-
-        assert settings.links.internal_link_style == "relative"
-        assert settings.links.missing_page_links == "comment"
 
 
 class TestOutputSettings:
@@ -107,5 +94,4 @@ class TestOutputSettings:
         settings = OutputSettings()
 
         assert settings.filename_style == "slugify"
-        assert settings.preserve_hierarchy is True
         assert settings.max_heading_level == 6

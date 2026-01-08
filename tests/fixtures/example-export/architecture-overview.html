@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Architecture Overview - Documentation</title>
+</head>
+<body>
+<div id="main-content">
+    <h1>Architecture Overview</h1>
+    <p>This document describes the high-level architecture of our system.</p>
+
+    <h2>System Components</h2>
+    <p>The system consists of the following components:</p>
+    <ol>
+        <li><strong>Frontend</strong> - React-based web application</li>
+        <li><strong>Backend</strong> - Python FastAPI service</li>
+        <li><strong>Database</strong> - PostgreSQL</li>
+    </ol>
+
+    <p><em>Note:</em> All components communicate via REST APIs.</p>
+
+    <h2>Data Flow</h2>
+    <p>Data flows through the system as follows:</p>
+    <blockquote><p>User Request → Frontend → Backend → Database → Response</p></blockquote>
+
+    <h2>Security Considerations</h2>
+    <p>Key security measures include:</p>
+    <ul>
+        <li>JWT authentication</li>
+        <li>HTTPS encryption</li>
+        <li>Rate limiting</li>
+    </ul>
+
+    <hr/>
+
+    <p><strong>Tip:</strong> For more details, see the detailed design documents.</p>
+
+    <h2>Internal Notes</h2>
+    <p>These are internal notes that should not be in the public docs.</p>
+</div>
+</body>
+</html>

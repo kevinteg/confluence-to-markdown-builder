@@ -72,7 +72,7 @@ class TestConversionBuilder:
         builder1 = ConversionBuilder(settings)
         hash1 = builder1._hash_settings()
 
-        settings.exclude_sections = ["**/Test"]
+        settings.exclude_pages = ["Test/*"]
         builder2 = ConversionBuilder(settings)
         hash2 = builder2._hash_settings()
 

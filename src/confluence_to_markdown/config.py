@@ -19,23 +19,11 @@ class LoggingSettings:
 
 
 @dataclass
-class LinkSettings:
-    """Link handling configuration."""
-
-    internal_link_style: Literal["relative", "title_only"] = "relative"
-    missing_page_links: Literal["preserve", "comment", "strip"] = "comment"
-
-
-@dataclass
 class ContentSettings:
     """Content handling configuration."""
 
-    unknown_macro_handling: Literal["comment", "strip", "preserve_text"] = "comment"
     include_frontmatter: bool = True
-    frontmatter_fields: list[str] = field(
-        default_factory=lambda: ["title", "created_date", "modified_date", "labels"]
-    )
-    links: LinkSettings = field(default_factory=LinkSettings)
+    frontmatter_fields: list[str] = field(default_factory=lambda: ["title"])
 
 
 @dataclass
@@ -43,7 +31,6 @@ class OutputSettings:
     """Output formatting configuration."""
 
     filename_style: Literal["slugify", "preserve"] = "slugify"
-    preserve_hierarchy: bool = True
     max_heading_level: int = 6
 
 
@@ -55,7 +42,6 @@ class Settings:
     exports_dir: Path = field(default_factory=lambda: Path("./exports"))
     logging: LoggingSettings = field(default_factory=LoggingSettings)
     exclude_pages: list[str] = field(default_factory=list)
-    exclude_sections: list[str] = field(default_factory=list)
     content: ContentSettings = field(default_factory=ContentSettings)
     output: OutputSettings = field(default_factory=OutputSettings)
 
@@ -95,24 +81,14 @@ class Settings:
         )
 
         content_data = data.get("content", {})
-        links_data = content_data.get("links", {})
-        link_settings = LinkSettings(
-            internal_link_style=links_data.get("internal_link_style", "relative"),
-            missing_page_links=links_data.get("missing_page_links", "comment"),
-        )
         content_settings = ContentSettings(
-            unknown_macro_handling=content_data.get("unknown_macro_handling", "comment"),
             include_frontmatter=content_data.get("include_frontmatter", True),
-            frontmatter_fields=content_data.get(
-                "frontmatter_fields", ["title", "created_date", "modified_date", "labels"]
-            ),
-            links=link_settings,
+            frontmatter_fields=content_data.get("frontmatter_fields", ["title"]),
         )
 
         output_data = data.get("output", {})
         output_settings = OutputSettings(
             filename_style=output_data.get("filename_style", "slugify"),
-            preserve_hierarchy=output_data.get("preserve_hierarchy", True),
             max_heading_level=output_data.get("max_heading_level", 6),
         )
 
@@ -121,7 +97,6 @@ class Settings:
             exports_dir=Path(data.get("exports_dir", "./exports")),
             logging=logging_settings,
             exclude_pages=data.get("exclude_pages", []),
-            exclude_sections=data.get("exclude_sections", []),
             content=content_settings,
             output=output_settings,
         )

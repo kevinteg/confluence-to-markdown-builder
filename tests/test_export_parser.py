@@ -16,39 +16,11 @@ from confluence_to_markdown.export_parser import (
 class TestPageNode:
     """Tests for PageNode class."""
 
-    def test_depth_root_page(self) -> None:
-        """Root pages have depth 0."""
-        page = PageNode(id="1", title="Root", body_content="")
-        assert page.depth == 0
-
-    def test_depth_child_page(self) -> None:
-        """Child pages have correct depth."""
-        root = PageNode(id="1", title="Root", body_content="")
-        child = PageNode(id="2", title="Child", body_content="", parent=root)
-        grandchild = PageNode(id="3", title="Grandchild", body_content="", parent=child)
-
-        assert root.depth == 0
-        assert child.depth == 1
-        assert grandchild.depth == 2
-
-    def test_path_single_page(self) -> None:
-        """Single page path is just the title."""
-        page = PageNode(id="1", title="My Page", body_content="")
-        assert page.path == "My Page"
-
-    def test_path_nested_pages(self) -> None:
-        """Nested pages have full path."""
-        root = PageNode(id="1", title="Root", body_content="")
-        child = PageNode(id="2", title="Child", body_content="", parent=root)
-        grandchild = PageNode(id="3", title="Grandchild", body_content="", parent=child)
-
-        assert grandchild.path == "Root/Child/Grandchild"
-
     def test_content_hash(self) -> None:
         """Content hash is consistent."""
-        page1 = PageNode(id="1", title="Page", body_content="Hello World")
-        page2 = PageNode(id="2", title="Different", body_content="Hello World")
-        page3 = PageNode(id="3", title="Page", body_content="Different content")
+        page1 = PageNode(id="1", title="Page", body_content="Hello World", filename="test.html")
+        page2 = PageNode(id="2", title="Different", body_content="Hello World", filename="test2.html")
+        page3 = PageNode(id="3", title="Page", body_content="Different content", filename="test3.html")
 
         assert page1.content_hash == page2.content_hash
         assert page1.content_hash != page3.content_hash
@@ -70,94 +42,111 @@ class TestExportParser:
             with pytest.raises(ValueError):
                 parser.parse(f.name)
 
-    def test_parse_directory_without_entities(self) -> None:
-        """Raises error for directory without entities.xml."""
+    def test_parse_directory_without_html(self) -> None:
+        """Raises error for directory without HTML files."""
         parser = ExportParser()
         with tempfile.TemporaryDirectory() as tmpdir:
-            with pytest.raises(ValueError, match="entities.xml not found"):
+            with pytest.raises(ValueError, match="No HTML files found"):
                 parser.parse(tmpdir)
 
     def test_parse_minimal_export(self) -> None:
         """Parses a minimal valid export."""
         parser = ExportParser()
         with tempfile.TemporaryDirectory() as tmpdir:
-            entities_xml = Path(tmpdir) / "entities.xml"
-            entities_xml.write_text(
-                """<?xml version="1.0" encoding="UTF-8"?>
-                <hibernate-generic>
-                    <object class="Space" package="com.atlassian.confluence.spaces">
-                        <id name="id">1</id>
-                        <property name="key"><![CDATA[TEST]]></property>
-                        <property name="name"><![CDATA[Test Space]]></property>
-                    </object>
-                    <object class="Page" package="com.atlassian.confluence.pages">
-                        <id name="id">100</id>
-                        <property name="title"><![CDATA[Test Page]]></property>
-                        <property name="contentStatus">current</property>
-                        <property name="position">0</property>
-                    </object>
-                </hibernate-generic>
+            html_file = Path(tmpdir) / "test-page.html"
+            html_file.write_text(
+                """<!DOCTYPE html>
+                <html>
+                <head><title>Test Page</title></head>
+                <body>
+                <div id="main-content">
+                    <h1>Test Page</h1>
+                    <p>Some content here.</p>
+                </div>
+                </body>
+                </html>
                 """
             )
 
             export = parser.parse(tmpdir)
 
-            assert export.space.key == "TEST"
-            assert export.space.name == "Test Space"
-            assert len(export.root_pages) == 1
-            assert export.root_pages[0].title == "Test Page"
+            assert len(export.pages) == 1
+            assert export.pages[0].title == "Test Page"
+
+    def test_parse_multiple_html_files(self) -> None:
+        """Parses multiple HTML files from directory."""
+        parser = ExportParser()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create first HTML file
+            html1 = Path(tmpdir) / "page1.html"
+            html1.write_text(
+                """<!DOCTYPE html>
+                <html>
+                <head><title>Page 1</title></head>
+                <body><p>Content 1</p></body>
+                </html>
+                """
+            )
+
+            # Create second HTML file
+            html2 = Path(tmpdir) / "page2.html"
+            html2.write_text(
+                """<!DOCTYPE html>
+                <html>
+                <head><title>Page 2</title></head>
+                <body><p>Content 2</p></body>
+                </html>
+                """
+            )
+
+            export = parser.parse(tmpdir)
+
+            assert len(export.pages) == 2
+            titles = {p.title for p in export.pages}
+            assert "Page 1" in titles
+            assert "Page 2" in titles
 
 
 class TestConfluenceExport:
     """Tests for ConfluenceExport class."""
 
-    def test_walk_pages_order(self) -> None:
-        """walk_pages returns pages in tree order."""
-        root1 = PageNode(id="1", title="Root 1", body_content="", position=0)
-        root2 = PageNode(id="2", title="Root 2", body_content="", position=1)
-        child1 = PageNode(
-            id="3", title="Child 1", body_content="", parent=root1, position=0
-        )
-        root1.children = [child1]
+    def test_walk_pages(self) -> None:
+        """walk_pages returns all pages."""
+        page1 = PageNode(id="1", title="Page 1", body_content="content", filename="p1.html")
+        page2 = PageNode(id="2", title="Page 2", body_content="content", filename="p2.html")
 
         export = ConfluenceExport(
             path=Path("."),
-            space=Space(id="1", key="TEST", name="Test"),
-            root_pages=[root1, root2],
-            pages_by_id={"1": root1, "2": root2, "3": child1},
+            space=Space(key="TEST", name="Test"),
+            pages=[page1, page2],
         )
 
         pages = list(export.walk_pages())
-        assert [p.title for p in pages] == ["Root 1", "Child 1", "Root 2"]
-
-    def test_get_page_by_path(self) -> None:
-        """get_page_by_path finds correct page."""
-        root = PageNode(id="1", title="Root", body_content="", position=0)
-        child = PageNode(id="2", title="Child", body_content="", parent=root, position=0)
-        root.children = [child]
-
-        export = ConfluenceExport(
-            path=Path("."),
-            space=Space(id="1", key="TEST", name="Test"),
-            root_pages=[root],
-            pages_by_id={"1": root, "2": child},
-        )
-
-        assert export.get_page_by_path("Root") == root
-        assert export.get_page_by_path("Root/Child") == child
-        assert export.get_page_by_path("Nonexistent") is None
+        assert len(pages) == 2
 
     def test_all_pages(self) -> None:
         """all_pages returns flat list."""
-        root = PageNode(id="1", title="Root", body_content="", position=0)
-        child = PageNode(id="2", title="Child", body_content="", parent=root, position=0)
-        root.children = [child]
+        page1 = PageNode(id="1", title="Page 1", body_content="content", filename="p1.html")
+        page2 = PageNode(id="2", title="Page 2", body_content="content", filename="p2.html")
 
         export = ConfluenceExport(
             path=Path("."),
-            space=Space(id="1", key="TEST", name="Test"),
-            root_pages=[root],
-            pages_by_id={"1": root, "2": child},
+            space=Space(key="TEST", name="Test"),
+            pages=[page1, page2],
         )
 
         assert len(export.all_pages) == 2
+
+    def test_pages_by_id(self) -> None:
+        """pages_by_id is built correctly."""
+        page1 = PageNode(id="abc", title="Page 1", body_content="content", filename="p1.html")
+        page2 = PageNode(id="def", title="Page 2", body_content="content", filename="p2.html")
+
+        export = ConfluenceExport(
+            path=Path("."),
+            space=Space(key="TEST", name="Test"),
+            pages=[page1, page2],
+        )
+
+        assert export.pages_by_id["abc"] == page1
+        assert export.pages_by_id["def"] == page2

@@ -22,7 +22,7 @@ from confluence_to_markdown.logging_config import setup_logging
 @click.option("--verbose", "-v", is_flag=True, help="Enable debug logging")
 @click.pass_context
 def cli(ctx: click.Context, config: str, verbose: bool) -> None:
-    """Confluence XML Export to Markdown converter."""
+    """Confluence HTML Export to Markdown converter."""
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = config
     ctx.obj["verbose"] = verbose
@@ -45,9 +45,9 @@ def cli(ctx: click.Context, config: str, verbose: bool) -> None:
 @click.option("--force", "-f", is_flag=True, help="Force regeneration of all files")
 @click.pass_context
 def convert(ctx: click.Context, export_path: str, force: bool) -> None:
-    """Convert a Confluence XML export to Markdown.
+    """Convert a Confluence HTML export to Markdown.
 
-    EXPORT_PATH: Path to XML export ZIP or extracted directory
+    EXPORT_PATH: Path to HTML export ZIP or extracted directory
     """
     settings: Settings = ctx.obj["settings"]
     builder = ConversionBuilder(settings)
@@ -66,7 +66,6 @@ def convert(ctx: click.Context, export_path: str, force: bool) -> None:
     warnings = []
     for report in result.page_reports:
         warnings.extend(report.warnings)
-        warnings.extend(report.unknown_macros)
 
     if warnings:
         click.echo()
@@ -134,12 +133,12 @@ def clean(ctx: click.Context) -> None:
 
 
 @cli.command()
-@click.argument("page_path")
+@click.argument("page_title")
 @click.pass_context
-def preview(ctx: click.Context, page_path: str) -> None:
+def preview(ctx: click.Context, page_title: str) -> None:
     """Preview conversion of a single page without writing to disk.
 
-    PAGE_PATH: Page hierarchy path like 'Parent/Child/Page Title'
+    PAGE_TITLE: Title of the page to preview
     """
     settings: Settings = ctx.obj["settings"]
 
@@ -161,12 +160,12 @@ def preview(ctx: click.Context, page_path: str) -> None:
     for export_path in exports:
         try:
             export = parser.parse(export_path)
-            page = export.get_page_by_path(page_path)
+            # Search by title
+            page = next((p for p in export.pages if p.title == page_title), None)
 
             if page:
                 click.echo(f"Found page in: {export_path.name}")
                 click.echo(f"Page: {page.title}")
-                click.echo(f"Path: {page.path}")
                 click.echo("-" * 40)
 
                 result = converter.convert(page, export)
@@ -183,7 +182,7 @@ def preview(ctx: click.Context, page_path: str) -> None:
         except Exception as e:
             click.echo(f"Error parsing {export_path.name}: {e}", err=True)
 
-    click.echo(f"Page not found: {page_path}")
+    click.echo(f"Page not found: {page_title}")
     sys.exit(1)
 
 

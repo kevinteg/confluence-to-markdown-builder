@@ -1,33 +1,12 @@
-"""Convert Confluence storage format to Markdown."""
+"""Convert HTML to Markdown."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from fnmatch import fnmatch
 from typing import Any
 
-from confluence_content_parser import ConfluenceParser
-from confluence_content_parser.nodes import (
-    Fragment,
-    HeadingElement,
-    TextBreakElement,
-    TextEffectElement,
-    ListElement,
-    ListItem,
-    Table,
-    TableRow,
-    TableCell,
-    LinkElement,
-    Image,
-    CodeMacro,
-    PanelMacro,
-    ExpandMacro,
-    Text,
-    HeadingType,
-    TextEffectType,
-    ListType,
-)
+from bs4 import BeautifulSoup, NavigableString, Tag
 
 from confluence_to_markdown.config import Settings
 from confluence_to_markdown.export_parser import ConfluenceExport, PageNode
@@ -40,45 +19,33 @@ class ConversionResult:
     markdown: str
     frontmatter: dict[str, Any] | None = None
     warnings: list[str] = field(default_factory=list)
-    skipped_sections: list[str] = field(default_factory=list)
-    unknown_macros: list[str] = field(default_factory=list)
 
 
 class MarkdownConverter:
-    """Converts Confluence storage format to Markdown."""
+    """Converts HTML to Markdown."""
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.parser = ConfluenceParser()
 
     def convert(self, page: PageNode, export: ConfluenceExport) -> ConversionResult:
         """Convert a single page to Markdown.
 
         Args:
             page: The page to convert.
-            export: The full export (for resolving internal links).
+            export: The full export (for context).
 
         Returns:
             ConversionResult with the Markdown content and metadata.
         """
         warnings: list[str] = []
-        skipped_sections: list[str] = []
-        unknown_macros: list[str] = []
 
         if not page.body_content.strip():
             markdown = ""
         else:
             try:
-                document = self.parser.parse(page.body_content)
-                context = ConversionContext(
-                    export=export,
-                    current_page=page,
-                    settings=self.settings,
-                    warnings=warnings,
-                    skipped_sections=skipped_sections,
-                    unknown_macros=unknown_macros,
-                )
-                markdown = self._convert_document(document, context)
+                soup = BeautifulSoup(page.body_content, "lxml")
+                markdown = self._convert_element(soup, warnings)
+                markdown = self._clean_markdown(markdown)
             except Exception as e:
                 warnings.append(f"Parse error: {e}")
                 markdown = f"<!-- Parse error: {e} -->\n\n{page.body_content}"
@@ -97,8 +64,6 @@ class MarkdownConverter:
             markdown=markdown.strip() + "\n",
             frontmatter=frontmatter,
             warnings=warnings,
-            skipped_sections=skipped_sections,
-            unknown_macros=unknown_macros,
         )
 
     def _build_frontmatter(self, page: PageNode) -> dict[str, Any]:
@@ -108,12 +73,6 @@ class MarkdownConverter:
 
         if "title" in fields:
             frontmatter["title"] = page.title
-        if "created_date" in fields and page.created_date:
-            frontmatter["created_date"] = page.created_date.isoformat()
-        if "modified_date" in fields and page.modified_date:
-            frontmatter["modified_date"] = page.modified_date.isoformat()
-        if "labels" in fields and page.labels:
-            frontmatter["labels"] = page.labels
 
         return frontmatter
 
@@ -125,364 +84,243 @@ class MarkdownConverter:
                 lines.append(f"{key}:")
                 for item in value:
                     lines.append(f"  - {item}")
-            elif isinstance(value, str) and ("\n" in value or ":" in value):
+            elif isinstance(value, str) and ("\\n" in value or ":" in value):
                 lines.append(f'{key}: "{value}"')
             else:
                 lines.append(f"{key}: {value}")
         lines.append("---")
         return "\n".join(lines)
 
-    def _convert_document(self, document: Any, context: ConversionContext) -> str:
-        """Convert a parsed document to Markdown."""
-        parts: list[str] = []
-        heading_path: list[str] = []
-        skip_until_heading_level: int | None = None
-
-        root = document.root
-        if not hasattr(root, 'children'):
-            return document.text or ""
-
-        for node in root.children:
-            # Handle heading hierarchy for section filtering
-            if isinstance(node, HeadingElement):
-                level = self._get_heading_level(node)
-                text = self._get_node_text(node)
-
-                # Reset skip state if we've gone back up in heading hierarchy
-                if skip_until_heading_level is not None and level <= skip_until_heading_level:
-                    skip_until_heading_level = None
-
-                # Update heading path
-                while heading_path and len(heading_path) >= level:
-                    heading_path.pop()
-                heading_path.append(text)
-
-                # Check if this section should be skipped
-                if self._should_skip_section(heading_path, context):
-                    context.skipped_sections.append("/".join(heading_path))
-                    skip_until_heading_level = level
-                    continue
-
-            # Skip content if we're in a skipped section
-            if skip_until_heading_level is not None:
-                continue
-
-            # Convert the node
-            md = self._convert_node(node, context)
-            if md:
-                parts.append(md)
-
-        return "\n\n".join(parts)
-
-    def _should_skip_section(
-        self, heading_path: list[str], context: ConversionContext
-    ) -> bool:
-        """Check if current section should be excluded per settings."""
-        path_str = "/".join(heading_path)
-        for pattern in self.settings.exclude_sections:
-            if fnmatch(path_str, pattern):
-                return True
-        return False
-
-    def _get_heading_level(self, node: HeadingElement) -> int:
-        """Get numeric heading level from HeadingElement."""
-        type_to_level = {
-            HeadingType.H1: 1,
-            HeadingType.H2: 2,
-            HeadingType.H3: 3,
-            HeadingType.H4: 4,
-            HeadingType.H5: 5,
-            HeadingType.H6: 6,
-        }
-        return type_to_level.get(node.type, 1)
-
-    def _get_node_text(self, node: Any) -> str:
-        """Recursively extract text content from a node and its children."""
-        if isinstance(node, Text):
-            return node.text or ""
-
-        parts = []
-        if hasattr(node, 'children'):
-            for child in node.children:
-                parts.append(self._get_node_text(child))
-
-        return "".join(parts)
-
-    def _convert_node(self, node: Any, context: ConversionContext) -> str:
-        """Convert a single parsed node to Markdown."""
-        if isinstance(node, HeadingElement):
-            level = min(self._get_heading_level(node), self.settings.output.max_heading_level)
-            text = self._get_node_text(node)
-            return f"{'#' * level} {text}"
-
-        elif isinstance(node, TextBreakElement):
-            # Paragraphs and line breaks
-            return self._convert_text_element(node, context)
-
-        elif isinstance(node, Text):
-            return node.text or ""
-
-        elif isinstance(node, TextEffectElement):
-            return self._convert_text_effect(node, context)
-
-        elif isinstance(node, ListElement):
-            return self._convert_list(node, context)
-
-        elif isinstance(node, Table):
-            return self._convert_table(node, context)
-
-        elif isinstance(node, LinkElement):
-            return self._convert_link(node, context)
-
-        elif isinstance(node, Image):
-            return self._convert_image(node, context)
-
-        elif isinstance(node, CodeMacro):
-            return self._convert_code_macro(node, context)
-
-        elif isinstance(node, PanelMacro):
-            return self._convert_panel_macro(node, context)
-
-        elif isinstance(node, ExpandMacro):
-            return self._convert_expand_macro(node, context)
-
-        elif isinstance(node, Fragment):
-            # Process children
-            parts = []
-            for child in node.children:
-                md = self._convert_node(child, context)
-                if md:
-                    parts.append(md)
-            return "\n\n".join(parts)
-
-        else:
-            # Unknown node type
-            node_type = type(node).__name__
-            if "Macro" in node_type:
-                macro_name = getattr(node, "name", node_type)
-                context.unknown_macros.append(macro_name)
-                return self._handle_unknown_macro(node, macro_name, context)
-            # For other unknown types, just try to get text
-            text = self._get_node_text(node)
-            return text if text else ""
-
-    def _convert_text_element(self, node: TextBreakElement, context: ConversionContext) -> str:
-        """Convert a text break element (paragraph) to Markdown."""
-        parts = []
-        for child in node.children:
-            if isinstance(child, Text):
-                parts.append(child.text or "")
-            elif isinstance(child, TextEffectElement):
-                parts.append(self._convert_text_effect(child, context))
-            elif isinstance(child, LinkElement):
-                parts.append(self._convert_link(child, context))
-            elif isinstance(child, Image):
-                parts.append(self._convert_image(child, context))
-            else:
-                parts.append(self._get_node_text(child))
-        return "".join(parts)
-
-    def _convert_text_effect(self, node: TextEffectElement, context: ConversionContext) -> str:
-        """Convert text effect (bold, italic, etc.) to Markdown."""
-        text = self._get_node_text(node)
-
-        if node.type == TextEffectType.STRONG:
-            return f"**{text}**"
-        elif node.type == TextEffectType.EMPHASIS:
-            return f"*{text}*"
-        elif node.type == TextEffectType.MONOSPACE:
-            return f"`{text}`"
-        elif node.type == TextEffectType.STRIKETHROUGH:
-            return f"~~{text}~~"
-        elif node.type == TextEffectType.UNDERLINE:
-            return f"<u>{text}</u>"
-        elif node.type == TextEffectType.SUBSCRIPT:
-            return f"<sub>{text}</sub>"
-        elif node.type == TextEffectType.SUPERSCRIPT:
-            return f"<sup>{text}</sup>"
-        elif node.type == TextEffectType.BLOCKQUOTE:
-            lines = text.split("\n")
-            return "\n".join(f"> {line}" for line in lines)
-        else:
+    def _convert_element(self, element: Tag | NavigableString, warnings: list[str]) -> str:
+        """Convert an HTML element to Markdown."""
+        if isinstance(element, NavigableString):
+            text = str(element)
+            # Preserve whitespace but normalize excessive newlines
             return text
 
-    def _convert_list(self, node: ListElement, context: ConversionContext) -> str:
-        """Convert a list element to Markdown."""
-        lines = []
-        is_ordered = node.type == ListType.ORDERED
+        if not isinstance(element, Tag):
+            return ""
 
-        for i, item in enumerate(node.children, 1):
-            if isinstance(item, ListItem):
-                text = self._get_node_text(item)
+        tag_name = element.name.lower() if element.name else ""
+
+        # Skip script and style tags
+        if tag_name in ("script", "style", "head", "meta", "link"):
+            return ""
+
+        # Handle specific elements
+        if tag_name in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            return self._convert_heading(element, warnings)
+        elif tag_name == "p":
+            return self._convert_paragraph(element, warnings)
+        elif tag_name in ("ul", "ol"):
+            return self._convert_list(element, warnings)
+        elif tag_name == "li":
+            return self._convert_list_item(element, warnings)
+        elif tag_name == "table":
+            return self._convert_table(element, warnings)
+        elif tag_name == "a":
+            return self._convert_link(element, warnings)
+        elif tag_name == "img":
+            return self._convert_image(element)
+        elif tag_name in ("pre", "code"):
+            return self._convert_code(element, warnings)
+        elif tag_name in ("strong", "b"):
+            return self._convert_bold(element, warnings)
+        elif tag_name in ("em", "i"):
+            return self._convert_italic(element, warnings)
+        elif tag_name == "u":
+            return self._convert_underline(element, warnings)
+        elif tag_name == "s":
+            return self._convert_strikethrough(element, warnings)
+        elif tag_name == "sub":
+            return self._convert_subscript(element, warnings)
+        elif tag_name == "sup":
+            return self._convert_superscript(element, warnings)
+        elif tag_name == "blockquote":
+            return self._convert_blockquote(element, warnings)
+        elif tag_name == "hr":
+            return "\n---\n"
+        elif tag_name == "br":
+            return "  \n"
+        elif tag_name in ("div", "span", "section", "article", "main", "body", "html"):
+            # Container elements - process children
+            return self._convert_children(element, warnings)
+        else:
+            # Unknown element - just get text content
+            return self._convert_children(element, warnings)
+
+    def _convert_children(self, element: Tag, warnings: list[str]) -> str:
+        """Convert all children of an element."""
+        parts = []
+        for child in element.children:
+            if isinstance(child, NavigableString):
+                parts.append(str(child))
+            elif isinstance(child, Tag):
+                parts.append(self._convert_element(child, warnings))
+        return "".join(parts)
+
+    def _convert_heading(self, element: Tag, warnings: list[str]) -> str:
+        """Convert heading element to Markdown."""
+        level = int(element.name[1])  # h1 -> 1, h2 -> 2, etc.
+        level = min(level, self.settings.output.max_heading_level)
+        text = self._get_text_content(element, warnings).strip()
+        return f"\n\n{'#' * level} {text}\n\n"
+
+    def _convert_paragraph(self, element: Tag, warnings: list[str]) -> str:
+        """Convert paragraph element to Markdown."""
+        content = self._convert_children(element, warnings).strip()
+        if content:
+            return f"\n\n{content}\n\n"
+        return ""
+
+    def _convert_list(self, element: Tag, warnings: list[str]) -> str:
+        """Convert list element to Markdown."""
+        is_ordered = element.name.lower() == "ol"
+        items = []
+        counter = 1
+
+        for child in element.children:
+            if isinstance(child, Tag) and child.name.lower() == "li":
+                item_content = self._get_text_content(child, warnings).strip()
                 if is_ordered:
-                    lines.append(f"{i}. {text}")
+                    items.append(f"{counter}. {item_content}")
+                    counter += 1
                 else:
-                    lines.append(f"- {text}")
+                    items.append(f"- {item_content}")
 
-        return "\n".join(lines)
+        return "\n\n" + "\n".join(items) + "\n\n"
 
-    def _convert_table(self, node: Table, context: ConversionContext) -> str:
-        """Convert a table to GFM Markdown."""
+    def _convert_list_item(self, element: Tag, warnings: list[str]) -> str:
+        """Convert a standalone list item (shouldn't happen normally)."""
+        content = self._get_text_content(element, warnings).strip()
+        return f"- {content}\n"
+
+    def _convert_table(self, element: Tag, warnings: list[str]) -> str:
+        """Convert table element to GFM Markdown."""
+        rows = []
+
+        # Find all rows (in thead, tbody, or directly in table)
+        for row in element.find_all("tr"):
+            cells = []
+            for cell in row.find_all(["th", "td"]):
+                cell_text = self._get_text_content(cell, warnings).strip()
+                # Escape pipe characters in cell content
+                cell_text = cell_text.replace("|", "\\|")
+                cells.append(cell_text)
+            if cells:
+                rows.append(cells)
+
+        if not rows:
+            return ""
+
+        # Build markdown table
         lines = []
+        if rows:
+            # Header row
+            lines.append("| " + " | ".join(rows[0]) + " |")
+            # Separator
+            lines.append("| " + " | ".join(["---"] * len(rows[0])) + " |")
+            # Data rows
+            for row in rows[1:]:
+                # Pad row to match header length
+                while len(row) < len(rows[0]):
+                    row.append("")
+                lines.append("| " + " | ".join(row) + " |")
 
-        for i, row in enumerate(node.children):
-            if isinstance(row, TableRow):
-                cells = []
-                for cell in row.children:
-                    if isinstance(cell, TableCell):
-                        cells.append(self._get_node_text(cell))
+        return "\n\n" + "\n".join(lines) + "\n\n"
 
-                lines.append("| " + " | ".join(cells) + " |")
+    def _convert_link(self, element: Tag, warnings: list[str]) -> str:
+        """Convert link element to Markdown."""
+        href = element.get("href", "")
+        text = self._get_text_content(element, warnings).strip()
 
-                # Add header separator after first row
-                if i == 0:
-                    lines.append("| " + " | ".join(["---"] * len(cells)) + " |")
-
-        return "\n".join(lines)
-
-    def _convert_link(self, node: LinkElement, context: ConversionContext) -> str:
-        """Convert a link to Markdown."""
-        text = self._get_node_text(node)
-        href = getattr(node, 'url', "") or getattr(node, 'href', "") or ""
-
-        # Handle internal page links
-        page_id = getattr(node, 'page_id', None)
-        page_title = getattr(node, 'page_title', None)
-
-        if page_id or page_title:
-            return self._convert_internal_link(node, text, context)
+        if not text:
+            text = str(href)
 
         if href:
             return f"[{text}]({href})"
         return text
 
-    def _convert_internal_link(
-        self, node: Any, text: str, context: ConversionContext
-    ) -> str:
-        """Convert an internal Confluence page link."""
-        page_id = getattr(node, 'page_id', None)
-        page_title = getattr(node, 'page_title', None) or text
-
-        style = self.settings.content.links.internal_link_style
-
-        if style == "title_only":
-            return f"[{page_title}]"
-
-        # Try to find the target page
-        target_page = None
-        if page_id and context.export:
-            target_page = context.export.pages_by_id.get(str(page_id))
-
-        if target_page:
-            # Calculate relative path
-            rel_path = self._calculate_relative_path(
-                context.current_page, target_page
-            )
-            return f"[{text or target_page.title}]({rel_path})"
-        else:
-            # Missing page link
-            missing_handling = self.settings.content.links.missing_page_links
-            context.warnings.append(f"Link target not found: {page_title}")
-
-            if missing_handling == "comment":
-                return f"<!-- Link to missing page: {page_title} -->[{text}]"
-            elif missing_handling == "strip":
-                return text
-            else:  # preserve
-                return f"[{text}]"
-
-    def _calculate_relative_path(
-        self, from_page: PageNode, to_page: PageNode
-    ) -> str:
-        """Calculate relative path from one page to another."""
-        from_parts = from_page.path.split("/")[:-1]  # Directory of source
-        to_parts = to_page.path.split("/")
-
-        # Find common prefix
-        common = 0
-        for i in range(min(len(from_parts), len(to_parts))):
-            if from_parts[i] == to_parts[i]:
-                common += 1
-            else:
-                break
-
-        # Build relative path
-        up_count = len(from_parts) - common
-        rel_parts = [".."] * up_count + to_parts[common:]
-
-        # Convert to filename
-        if rel_parts:
-            rel_parts[-1] = self._slugify(rel_parts[-1]) + ".md"
-        else:
-            rel_parts = [self._slugify(to_page.title) + ".md"]
-
-        return "/".join(rel_parts)
-
-    def _slugify(self, text: str) -> str:
-        """Convert text to kebab-case slug."""
-        text = text.lower()
-        text = re.sub(r"[^\w\s-]", "", text)
-        text = re.sub(r"[\s_]+", "-", text)
-        text = re.sub(r"-+", "-", text)
-        return text.strip("-")
-
-    def _convert_image(self, node: Image, context: ConversionContext) -> str:
-        """Convert an image to Markdown."""
-        alt = getattr(node, 'alt', "") or ""
-        src = getattr(node, 'url', "") or getattr(node, 'src', "") or getattr(node, 'filename', "") or ""
+    def _convert_image(self, element: Tag) -> str:
+        """Convert image element to Markdown."""
+        src = element.get("src", "")
+        alt = element.get("alt", "")
         return f"![{alt}]({src})"
 
-    def _convert_code_macro(self, node: CodeMacro, context: ConversionContext) -> str:
-        """Convert a code macro to a fenced code block."""
-        language = getattr(node, 'language', "") or ""
-        code = self._get_node_text(node)
-        return f"```{language}\n{code}\n```"
+    def _convert_code(self, element: Tag, warnings: list[str]) -> str:
+        """Convert code/pre element to Markdown."""
+        # Check if this is a code block (pre) or inline code
+        if element.name.lower() == "pre":
+            # Try to find language class
+            language = ""
+            code_elem = element.find("code")
+            if code_elem and isinstance(code_elem, Tag):
+                classes = code_elem.get("class", [])
+                if isinstance(classes, list):
+                    for cls in classes:
+                        if cls.startswith("language-"):
+                            language = cls[9:]
+                            break
 
-    def _convert_panel_macro(self, node: PanelMacro, context: ConversionContext) -> str:
-        """Convert info/warning/note/tip panels to Markdown callouts."""
-        panel_type = getattr(node, 'panel_type', "info") or "info"
-        content = self._get_node_text(node)
+            code_text = element.get_text()
+            return f"\n\n```{language}\n{code_text}\n```\n\n"
+        else:
+            # Inline code
+            code_text = element.get_text()
+            return f"`{code_text}`"
 
-        icons = {
-            "info": "Info",
-            "warning": "Warning",
-            "note": "Note",
-            "tip": "Tip",
-        }
-        header = icons.get(panel_type.lower(), panel_type.title())
+    def _convert_bold(self, element: Tag, warnings: list[str]) -> str:
+        """Convert bold element to Markdown."""
+        content = self._convert_children(element, warnings)
+        return f"**{content.strip()}**"
 
+    def _convert_italic(self, element: Tag, warnings: list[str]) -> str:
+        """Convert italic element to Markdown."""
+        content = self._convert_children(element, warnings)
+        return f"*{content.strip()}*"
+
+    def _convert_underline(self, element: Tag, warnings: list[str]) -> str:
+        """Convert underline element to HTML (no Markdown equivalent)."""
+        content = self._convert_children(element, warnings)
+        return f"<u>{content}</u>"
+
+    def _convert_strikethrough(self, element: Tag, warnings: list[str]) -> str:
+        """Convert strikethrough element to Markdown."""
+        content = self._convert_children(element, warnings)
+        return f"~~{content.strip()}~~"
+
+    def _convert_subscript(self, element: Tag, warnings: list[str]) -> str:
+        """Convert subscript element to HTML."""
+        content = self._convert_children(element, warnings)
+        return f"<sub>{content}</sub>"
+
+    def _convert_superscript(self, element: Tag, warnings: list[str]) -> str:
+        """Convert superscript element to HTML."""
+        content = self._convert_children(element, warnings)
+        return f"<sup>{content}</sup>"
+
+    def _convert_blockquote(self, element: Tag, warnings: list[str]) -> str:
+        """Convert blockquote element to Markdown."""
+        content = self._convert_children(element, warnings).strip()
         lines = content.split("\n")
         quoted = "\n".join(f"> {line}" for line in lines)
-        return f"> **{header}:** {quoted.lstrip('> ')}"
+        return f"\n\n{quoted}\n\n"
 
-    def _convert_expand_macro(self, node: ExpandMacro, context: ConversionContext) -> str:
-        """Convert expand/collapse sections to HTML details."""
-        title = getattr(node, 'title', "Details") or "Details"
-        content = self._get_node_text(node)
-        return f"<details>\n<summary>{title}</summary>\n\n{content}\n\n</details>"
+    def _get_text_content(self, element: Tag, warnings: list[str]) -> str:
+        """Get text content with inline formatting preserved."""
+        return self._convert_children(element, warnings)
 
-    def _handle_unknown_macro(
-        self, node: Any, macro_name: str, context: ConversionContext
-    ) -> str:
-        """Handle macros without a specific converter."""
-        handling = self.settings.content.unknown_macro_handling
-        text = self._get_node_text(node)
+    def _clean_markdown(self, markdown: str) -> str:
+        """Clean up the generated Markdown."""
+        # Remove excessive newlines (more than 2)
+        markdown = re.sub(r"\n{3,}", "\n\n", markdown)
 
-        if handling == "comment":
-            return f"<!-- Unknown macro: {macro_name} -->\n{text}"
-        elif handling == "strip":
-            return ""
-        else:  # preserve_text
-            return text
+        # Remove leading/trailing whitespace from lines
+        lines = markdown.split("\n")
+        lines = [line.rstrip() for line in lines]
+        markdown = "\n".join(lines)
 
+        # Ensure single newline at end
+        markdown = markdown.strip() + "\n"
 
-@dataclass
-class ConversionContext:
-    """Context passed through conversion for state tracking."""
-
-    export: ConfluenceExport
-    current_page: PageNode
-    settings: Settings
-    warnings: list[str] = field(default_factory=list)
-    skipped_sections: list[str] = field(default_factory=list)
-    unknown_macros: list[str] = field(default_factory=list)
+        return markdown
