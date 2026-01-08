@@ -58,6 +58,8 @@ exports/
 logs/
 *.log
 .confluence-build-state.json
+confluence_export/
+confluence_markdown/
 
 # OS
 .DS_Store
