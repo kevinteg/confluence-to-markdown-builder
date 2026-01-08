@@ -1,0 +1,75 @@
+# Confluence to Markdown Converter Settings
+# Copy this file to settings.yaml and customize as needed
+
+# Input/output directories (relative to this file or absolute)
+imports_dir: ./imports
+exports_dir: ./exports
+
+# Logging configuration
+logging:
+  level: INFO  # DEBUG, INFO, WARNING, ERROR
+  file: ./logs/converter.log  # Optional: set to null to disable file logging
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Page filtering - exclude entire pages by title pattern
+# Uses glob-style matching against the page hierarchy path
+exclude_pages:
+  # Examples:
+  # - "Archive/*"           # All pages under Archive
+  # - "*/Deprecated"        # Any page named Deprecated
+  # - "Meeting Notes/**"    # Meeting Notes and all descendants
+
+# Section filtering - exclude content under specific headings
+# Matched against the heading hierarchy path within each page
+exclude_sections:
+  # Examples:
+  # - "**/Change Log"       # Any section named "Change Log" at any level
+  # - "**/Revision History" # Any section named "Revision History"
+  # - "Overview/Internal"   # "Internal" section only under "Overview"
+
+# Content handling options
+content:
+  # How to handle Confluence macros without a Markdown equivalent
+  # Options:
+  #   - comment: Wrap in HTML comment with macro name
+  #   - strip: Remove entirely
+  #   - preserve_text: Extract text content only
+  unknown_macro_handling: comment
+  
+  # Include page metadata as YAML frontmatter in output files
+  include_frontmatter: true
+  frontmatter_fields:
+    - title
+    - created_date
+    - modified_date
+    - labels
+  
+  # Link handling
+  links:
+    # How to format internal Confluence page links
+    # Options:
+    #   - relative: Relative path to .md file (e.g., ../other-page.md)
+    #   - title_only: Just the page title as link text, no href
+    internal_link_style: relative
+    
+    # What to do with links to pages not included in the export
+    # Options:
+    #   - preserve: Keep original link text
+    #   - comment: Wrap in HTML comment noting missing target
+    #   - strip: Remove the link, keep text
+    missing_page_links: comment
+
+# Output formatting
+output:
+  # How to generate filenames from page titles
+  # Options:
+  #   - slugify: Convert to kebab-case (e.g., "My Page Title" -> "my-page-title.md")
+  #   - preserve: Keep original title (spaces and special chars may cause issues)
+  filename_style: slugify
+  
+  # Mirror Confluence page hierarchy in directory structure
+  preserve_hierarchy: true
+  
+  # Maximum heading level to use (h1-h6)
+  # Headings deeper than this will be capped at this level
+  max_heading_level: 6
