@@ -1,52 +1,42 @@
 # Confluence to Markdown Converter
 
-Convert Confluence XML space exports to Markdown files with preserved hierarchy and configurable filtering.
+Convert Confluence HTML space exports to Markdown files with a flat output structure.
 
 ## Features
 
-- **XML Export Processing**: Parses Confluence space XML exports (no API access needed)
-- **Hierarchy Preservation**: Maintains page structure in output directory
-- **Section Filtering**: Exclude pages or sections by heading hierarchy patterns
-- **Incremental Builds**: Make-like logic to only regenerate changed content
+- **HTML Export Processing**: Parses Confluence space HTML exports (no API access needed)
+- **Flat Output Structure**: All pages output to a single directory for easy organization
+- **Incremental Builds**: Only regenerates changed content
 - **Robust Logging**: Detailed logs of conversions, warnings, and errors
 - **Library + CLI**: Use as a command-line tool or import as a Python library
 
 ## Installation
 
 ```bash
-pip install confluence-to-markdown
-```
-
-Or for development:
-
-```bash
-git clone https://github.com/yourusername/confluence-to-markdown
-cd confluence-to-markdown
+git clone https://github.com/kevinteg/confluence-to-markdown-builder
+cd confluence-to-markdown-builder
 pip install -e ".[dev]"
 ```
 
+This installs the package in development mode and adds the `confluence-to-markdown` command to your PATH.
+
 ## Quick Start
 
-1. **Export your Confluence space**: In Confluence, go to Space Settings → Content Tools → Export, select XML export
+1. **Export your Confluence space**: In Confluence, go to Space Settings → Content Tools → Export, select HTML export
 
-2. **Place the export in the imports folder**:
+2. **Run the converter**:
    ```bash
-   cp ~/Downloads/myspace-export.zip ./imports/
+   confluence-to-markdown convert ./path/to/export.zip
    ```
 
-3. **Run the converter**:
-   ```bash
-   confluence-to-markdown convert ./imports/myspace-export.zip
-   ```
-
-4. **Find your Markdown files** in the `exports/` directory
+3. **Find your Markdown files** in the `exports/` directory
 
 ## Usage
 
 ### Basic Conversion
 
 ```bash
-# Convert an export
+# Convert an export (ZIP or extracted directory)
 confluence-to-markdown convert ./imports/myspace-export.zip
 
 # Force full reconversion (ignore cache)
@@ -66,7 +56,7 @@ confluence-to-markdown -v convert ./imports/export.zip
 confluence-to-markdown status
 
 # Preview a single page without writing files
-confluence-to-markdown preview "Project/Architecture Overview"
+confluence-to-markdown preview "Page Title"
 
 # Remove all generated files
 confluence-to-markdown clean
@@ -91,20 +81,16 @@ exclude_pages:
   - "Archive/*"
   - "*/Deprecated"
 
-# Exclude sections by heading path
-exclude_sections:
-  - "**/Change Log"
-  - "**/Revision History"
-
 # Content options
 content:
-  unknown_macro_handling: comment  # comment, strip, preserve_text
   include_frontmatter: true
+  frontmatter_fields:
+    - title
 
-# Output formatting  
+# Output formatting
 output:
   filename_style: slugify  # Creates kebab-case filenames
-  preserve_hierarchy: true
+  max_heading_level: 6
 ```
 
 ## Library Usage
@@ -116,12 +102,12 @@ from confluence_to_markdown import ExportParser, MarkdownConverter, Settings
 parser = ExportParser()
 export = parser.parse("./imports/myspace-export.zip")
 
-# Walk the page tree
-for page in export.walk_pages():
-    print(f"{'  ' * page.depth}{page.title}")
+# List all pages
+for page in export.pages:
+    print(f"{page.title} ({page.filename})")
 
 # Convert a single page
-settings = Settings.load("settings.yaml")
+settings = Settings.default()
 converter = MarkdownConverter(settings)
 result = converter.convert(page, export)
 
@@ -130,22 +116,20 @@ print(result.markdown)
 
 ## How It Works
 
-1. **Parse**: Extracts page tree and content from `entities.xml` in the Confluence export
-2. **Filter**: Applies exclude patterns from settings to skip unwanted pages/sections
-3. **Convert**: Transforms Confluence storage format (XHTML with macros) to Markdown
+1. **Parse**: Extracts pages from HTML files in the Confluence export
+2. **Filter**: Applies exclude patterns from settings to skip unwanted pages
+3. **Convert**: Transforms HTML to Markdown
 4. **Cache**: Tracks content hashes to enable incremental builds
 
-## Supported Confluence Elements
+## Supported HTML Elements
 
-- Headings, paragraphs, text formatting (bold, italic, etc.)
-- Ordered and unordered lists, task lists
-- Tables
-- Code blocks (with language hints)
-- Info, warning, note, and tip panels
-- Expand/collapse sections
-- Internal page links (converted to relative paths)
-- Images (with attachment path rewriting)
+- Headings, paragraphs, text formatting (bold, italic, underline, strikethrough)
+- Ordered and unordered lists
+- Tables (converted to GFM format)
+- Code blocks (with language detection)
+- Links and images
 - Blockquotes, horizontal rules
+- Subscript and superscript
 
 ## Development
 
